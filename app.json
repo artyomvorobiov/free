@@ -1,0 +1,83 @@
+{
+  "expo": {
+    "name": "Близко",
+    "slug": "blizko",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/images/icon.png",
+    "scheme": "blizko",
+    "userInterfaceStyle": "automatic",
+    "backgroundColor": "#F5F2ED",
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.blizko.messenger",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    },
+    "android": {
+      "package": "com.blizko.messenger",
+      "adaptiveIcon": {
+        "backgroundColor": "#FF6A3D",
+        "foregroundImage": "./assets/images/android-icon-foreground.png",
+        "backgroundImage": "./assets/images/android-icon-background.png",
+        "monochromeImage": "./assets/images/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "output": "single",
+      "favicon": "./assets/images/favicon.png"
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/images/splash-icon.png",
+          "imageWidth": 120,
+          "backgroundColor": "#F5F2ED",
+          "dark": {
+            "image": "./assets/images/splash-icon.png",
+            "backgroundColor": "#0E0D0C"
+          }
+        }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Камера нужна, чтобы снимать кружочки и фото для друзей.",
+          "microphonePermission": "Микрофон нужен для голосовых сообщений и кружочков со звуком.",
+          "recordAudioAndroid": true,
+          "barcodeScannerEnabled": false
+        }
+      ],
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Микрофон нужен для голосовых сообщений и кружочков со звуком.",
+          "enableBackgroundPlayback": false
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Доступ к фото нужен, чтобы отправлять снимки и ставить аватар.",
+          "cameraPermission": "Камера нужна, чтобы снимать фото для друзей."
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "color": "#FF6A3D"
+        }
+      ],
+      "expo-video",
+      "expo-font",
+      "expo-system-ui"
+    ],
+    "extra": {
+      "eas": {}
+    }
+  }
+}
