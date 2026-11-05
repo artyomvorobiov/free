@@ -423,6 +423,130 @@ console.log('Blocking + reports');
   ok(!se3, 'after unblock A can write');
 }
 
+
+console.log('Calls');
+{
+  const D = await userViaAdminOtp(`dave_${stamp}@test.dev`);
+  await D.c.rpc('bootstrap');
+  await D.c.from('profiles').update({ display_name: 'Дейв', username: `dave_${stamp}` }).eq('id', D.id);
+  const { data: chatDB } = await D.c.rpc('get_or_create_direct', { p_other: B.id });
+
+  // входящий вызов → push собеседнику
+  const pushOut = psql(`begin;
+    select set_config('request.jwt.claims', '{"sub":"${A.id}","role":"authenticated"}', true);
+    set local role authenticated;
+    select (public.start_call('${chatAB}', true)).status;
+    reset role;
+    select convert_from(body, 'UTF8') from net.http_request_queue order by id desc limit 1;
+    rollback;`);
+  const callPush = JSON.parse(pushOut.split('\n').find((l) => l.startsWith('[')));
+  ok(callPush[0].to === 'ExponentPushToken[test-bob]' && callPush[0].data.type === 'call' && callPush[0].sound === 'call.wav' && callPush[0].channelId === 'calls' && callPush[0].body.includes('видеозвонок'),
+    'incoming call push goes to callee with call data and ringtone', callPush[0]);
+
+  const { data: c1, error: e1 } = await A.c.rpc('start_call', { p_chat: chatAB, p_video: false });
+  ok(!e1 && c1.status === 'ringing' && c1.callee_id === B.id, 'A calls B → ringing', e1?.message);
+  const { data: bSees } = await B.c.from('calls').select('*').eq('id', c1.id).single();
+  ok(bSees?.status === 'ringing', 'callee sees the ringing call');
+  const { data: cSees } = await C.c.from('calls').select('*').eq('id', c1.id);
+  ok(cSees.length === 0, 'outsider cannot see the call');
+  const { error: ce } = await C.c.rpc('start_call', { p_chat: chatAB, p_video: false });
+  ok(!!ce, 'outsider cannot start a call in someone else chat');
+  const { error: ge } = await A.c.rpc('start_call', { p_chat: group, p_video: false });
+  ok(!!ge, 'group calls are rejected (direct only)');
+
+  await B.c.rpc('call_set_offer', { p_call: c1.id, p_offer: { type: 'offer', sdp: 'hack' } });
+  await A.c.rpc('call_set_offer', { p_call: c1.id, p_offer: { type: 'offer', sdp: 'v=0 offer' } });
+  const { data: withOffer } = await B.c.from('calls').select('offer').eq('id', c1.id).single();
+  ok(withOffer.offer?.sdp === 'v=0 offer', 'only the caller can store the offer');
+  const { error: ae } = await A.c.rpc('answer_call', { p_call: c1.id, p_answer: { type: 'answer', sdp: 'x' } });
+  ok(!!ae, 'caller cannot answer own call');
+  const { data: ans, error: ae2 } = await B.c.rpc('answer_call', { p_call: c1.id, p_answer: { type: 'answer', sdp: 'v=0 answer' } });
+  ok(!ae2 && ans.status === 'accepted' && ans.answered_at, 'B answers → accepted', ae2?.message);
+  const { data: aSeesAnswer } = await A.c.from('calls').select('answer, status').eq('id', c1.id).single();
+  ok(aSeesAnswer.answer?.sdp === 'v=0 answer' && aSeesAnswer.status === 'accepted', 'caller reads the answer');
+  await A.c.rpc('call_heartbeat', { p_call: c1.id });
+  ok(psql(`select heartbeat_at is not null from public.calls where id = '${c1.id}'`) === 't', 'heartbeat stored');
+
+  // занято
+  const { data: busy } = await D.c.rpc('start_call', { p_chat: chatDB, p_video: false });
+  ok(busy.status === 'busy', 'D gets «busy» while B is talking');
+  const busyMsg = psql(`select meta->>'call_status' from public.messages where chat_id = '${chatDB}' and kind = 'call' order by created_at desc limit 1`);
+  ok(busyMsg === 'busy', 'busy call recorded in D–B chat history');
+
+  // завершение
+  const unreadBefore = (await B.c.rpc('get_my_chats')).data.find((c) => c.id === chatAB).unread;
+  await sleep(1100);
+  const { data: ended } = await B.c.rpc('end_call', { p_call: c1.id });
+  ok(ended.status === 'ended' && ended.ended_by === B.id, 'B hangs up → ended');
+  const { data: again } = await A.c.rpc('end_call', { p_call: c1.id });
+  ok(again.status === 'ended', 'ending twice is harmless');
+  const { data: hist } = await A.c.from('messages').select('*').eq('chat_id', chatAB).eq('kind', 'call').order('created_at', { ascending: false }).limit(1).single();
+  ok(hist?.meta?.call_status === 'ended' && hist.meta.duration >= 1 && hist.sender_id === A.id && hist.meta.video === false, 'history message with duration', hist?.meta);
+  const unreadAfter = (await B.c.rpc('get_my_chats')).data.find((c) => c.id === chatAB).unread;
+  ok(unreadAfter === unreadBefore, 'answered call does not count as unread');
+
+  // отклонён
+  const { data: c2 } = await A.c.rpc('start_call', { p_chat: chatAB, p_video: true });
+  const { data: dec } = await B.c.rpc('end_call', { p_call: c2.id });
+  ok(dec.status === 'declined', 'callee declines → declined');
+
+  // отменён звонящим → у собеседника пропущенный
+  const { data: c3 } = await A.c.rpc('start_call', { p_chat: chatAB, p_video: false });
+  const { data: can } = await A.c.rpc('end_call', { p_call: c3.id });
+  ok(can.status === 'canceled', 'caller cancels → canceled');
+  const unreadMissed = (await B.c.rpc('get_my_chats')).data.find((c) => c.id === chatAB).unread;
+  ok(unreadMissed === unreadAfter + 1, 'canceled call counts as missed for callee');
+
+  // никто не ответил → фоновая задача помечает пропущенным и шлёт push
+  const { data: c4 } = await A.c.rpc('start_call', { p_chat: chatAB, p_video: false });
+  psql(`update public.calls set created_at = now() - interval '2 minutes' where id = '${c4.id}'`);
+  const missedOut = psql(`begin;
+    select public.purge_expired();
+    select convert_from(body, 'UTF8') from net.http_request_queue order by id desc limit 1;
+    rollback;`);
+  const missedPush = JSON.parse(missedOut.split('\n').find((l) => l.startsWith('[')));
+  ok(missedPush[0].to === 'ExponentPushToken[test-bob]' && missedPush[0].body === '📞 Пропущенный звонок', 'missed call push for callee', missedPush[0]);
+  psql('select public.purge_expired()');
+  ok(psql(`select status from public.calls where id = '${c4.id}'`) === 'missed', 'unanswered call marked missed by cron');
+
+  // звонок, где пропало приложение собеседника
+  const { data: c5 } = await A.c.rpc('start_call', { p_chat: chatAB, p_video: false });
+  await B.c.rpc('answer_call', { p_call: c5.id, p_answer: { type: 'answer', sdp: 'x' } });
+  psql(`update public.calls set heartbeat_at = now() - interval '5 minutes', answered_at = now() - interval '6 minutes' where id = '${c5.id}'`);
+  psql('select public.cleanup_stale_calls()');
+  ok(psql(`select status from public.calls where id = '${c5.id}'`) === 'ended', 'stale accepted call closed after heartbeats stop');
+
+  // повторный вызов отменяет предыдущий «висящий»
+  const { data: c6 } = await A.c.rpc('start_call', { p_chat: chatAB, p_video: false });
+  const { data: c7 } = await A.c.rpc('start_call', { p_chat: chatAB, p_video: false });
+  ok(psql(`select status from public.calls where id = '${c6.id}'`) === 'canceled' && c7.status === 'ringing', 'new call cancels previous ringing one');
+  await A.c.rpc('end_call', { p_call: c7.id });
+
+  // блокировка
+  await B.c.from('blocks').insert({ blocked: A.id });
+  const { error: be } = await A.c.rpc('start_call', { p_chat: chatAB, p_video: false });
+  ok(!!be, 'blocked user cannot call');
+  await B.c.from('blocks').delete().eq('blocked', A.id);
+
+  // ICE/TURN
+  const { data: ice1 } = await A.c.rpc('get_ice_servers');
+  ok(Array.isArray(ice1) && ice1[0].urls.some((u) => u.startsWith('stun:')), 'default STUN servers', ice1);
+  psql(`insert into public.app_config (key, value) values ('ice_servers', '[{"urls":["turn:turn.example.com:3478"],"username":"u","credential":"p"}]') on conflict (key) do update set value = excluded.value`);
+  psql(`insert into public.app_config (key, value) values ('turn_urls', '["turn:coturn.example.com:3478"]'), ('turn_secret', '"s3cret"') on conflict (key) do update set value = excluded.value`);
+  const { data: ice2 } = await A.c.rpc('get_ice_servers');
+  const stat = ice2.find((x) => x.username === 'u');
+  const dyn = ice2.find((x) => x.urls?.[0] === 'turn:coturn.example.com:3478');
+  const { createHmac } = await import('node:crypto');
+  const expected = dyn ? createHmac('sha1', 's3cret').update(dyn.username).digest('base64') : null;
+  ok(!!stat && !!dyn && dyn.username.endsWith(':' + A.id) && dyn.credential === expected, 'static TURN + coturn time-limited credentials', ice2);
+  psql(`delete from public.app_config where key in ('ice_servers', 'turn_urls', 'turn_secret')`);
+  const { data: cfg } = await A.c.from('app_config').select('*');
+  ok(!cfg || cfg.length === 0, 'app_config is not readable by clients');
+  const anon = createClient(API_URL, ANON, { auth: { persistSession: false } });
+  const { error: ie } = await anon.rpc('get_ice_servers');
+  ok(!!ie, 'anon cannot get ICE servers');
+}
+
 console.log('Account deletion');
 {
   const { error } = await C.c.rpc('delete_my_account');

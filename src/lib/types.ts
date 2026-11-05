@@ -1,5 +1,5 @@
 export type ChatKind = 'direct' | 'group' | 'self';
-export type MessageKind = 'text' | 'image' | 'voice' | 'circle' | 'touch' | 'capsule' | 'system';
+export type MessageKind = 'text' | 'image' | 'voice' | 'circle' | 'touch' | 'capsule' | 'system' | 'call';
 export type TouchKind = 'heart' | 'hug' | 'wave' | 'spark';
 
 export type ProfileLite = {
@@ -46,6 +46,10 @@ export type MessageMeta = {
   value?: string | number | null;
   title?: string;
   user_id?: string;
+  /** история звонков */
+  call_id?: string;
+  call_status?: 'ended' | 'declined' | 'missed' | 'canceled' | 'busy' | 'failed';
+  video?: boolean;
 };
 
 export type Reaction = { user_id: string; emoji: string };

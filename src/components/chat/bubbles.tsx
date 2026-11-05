@@ -4,7 +4,7 @@ import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import { router } from 'expo-router';
 import { useVideoPlayer, VideoView } from 'expo-video';
-import { Check, CheckCheck, Clock, Eye, Hourglass, Lock, Pause, Play, RotateCcw, Timer } from 'lucide-react-native';
+import { Check, CheckCheck, Clock, Eye, Hourglass, Lock, Pause, Phone, PhoneIncoming, PhoneMissed, PhoneOutgoing, Play, RotateCcw, Timer, Video } from 'lucide-react-native';
 import { memo, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { ActivityIndicator, Linking, Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import Animated, { FadeIn, ZoomIn } from 'react-native-reanimated';
@@ -14,7 +14,8 @@ import { Icon } from '@/components/ui/Icon';
 import { T } from '@/components/ui/T';
 import { Tap } from '@/components/ui/Tap';
 import { fetchCapsule } from '@/lib/api';
-import { memberName, preview, systemText } from '@/lib/chat-utils';
+import { startCall } from '@/lib/calls/engine';
+import { callInfo, memberName, preview, systemText } from '@/lib/chat-utils';
 import { haptic, playTouch, TOUCHES } from '@/lib/haptics';
 import { useMediaUrl } from '@/lib/media';
 import { formatCountdown, formatDuration, formatMoment, formatTime, fullDate } from '@/lib/time';
@@ -596,6 +597,49 @@ export const TouchBubble = memo(function TouchBubble({ m, ctx }: { m: Message; c
   );
 });
 
+export const CallBubble = memo(function CallBubble({ m, ctx }: { m: Message; ctx: BubbleCtx }) {
+  const t = useTheme();
+  const c = bubbleColors(ctx, t);
+  const info = callInfo(m, ctx.me);
+  const DirIcon = info.missed ? PhoneMissed : info.outgoing ? PhoneOutgoing : PhoneIncoming;
+  return (
+    <Tap
+      scale={0.98}
+      onLongPress={ctx.onLongPress}
+      delayLongPress={320}
+      onPress={() => startCall(m.chat_id, info.video)}
+      accessibilityLabel="Перезвонить"
+    >
+      <Shell ctx={ctx}>
+        <View style={styles.call}>
+          <View
+            style={[
+              styles.callIcon,
+              { backgroundColor: ctx.mine ? 'rgba(255,255,255,0.22)' : info.missed ? 'rgba(229,72,77,0.14)' : t.accentSoft },
+            ]}
+          >
+            <Icon icon={info.video ? Video : Phone} size={18} color={ctx.mine ? c.fg : info.missed ? t.danger : t.accent} />
+          </View>
+          <View style={{ flexShrink: 1 }}>
+            <T v="bodySemi" color={info.missed ? t.danger : c.fg}>
+              {info.title}
+            </T>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+              <Icon icon={DirIcon} size={12} color={info.missed ? t.danger : c.sub} />
+              <T v="caption" color={c.sub}>
+                {info.sub}
+              </T>
+            </View>
+          </View>
+        </View>
+        <View style={{ alignSelf: 'flex-end', marginTop: 2 }}>
+          <MetaRow m={m} ctx={ctx} color={c.sub} />
+        </View>
+      </Shell>
+    </Tap>
+  );
+});
+
 export function SystemRow({ m, chat, me }: { m: Message; chat: Chat | undefined; me: string | null }) {
   const t = useTheme();
   return (
@@ -661,4 +705,6 @@ const styles = StyleSheet.create({
   capsuleOpen: { width: 270, padding: 14, borderWidth: 1.5 },
   touch: { flexDirection: 'row', alignItems: 'center', gap: 10, alignSelf: 'center', paddingVertical: 8, paddingHorizontal: 14, borderRadius: 999, marginVertical: 4 },
   system: { borderRadius: 12, paddingHorizontal: 12, paddingVertical: 5 },
+  call: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingRight: 8, paddingVertical: 2, minWidth: 180 },
+  callIcon: { width: 38, height: 38, borderRadius: 19, alignItems: 'center', justifyContent: 'center' },
 });

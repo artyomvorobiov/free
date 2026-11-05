@@ -7,6 +7,7 @@ import { useMessages } from '@/store/messages';
 import { useUi } from '@/store/ui';
 
 import { fetchMessage, loadChats, loadMessages, markRead, touchPresence } from './api';
+import { checkIncomingCalls, refreshCall } from './calls/engine';
 import { DEMO } from './config';
 import { playTouch } from './haptics';
 import { supabase } from './supabase';
@@ -45,10 +46,12 @@ async function onInsert(row: Message) {
     const kind = (row.meta?.touch ?? 'heart') as TouchKind;
     playTouch(kind);
     useUi.getState().showTouch({ chatId: row.chat_id, kind, from: senderName(chat, row.sender_id), at: Date.now() });
+  } else if (row.kind === 'call' && !['missed', 'canceled'].includes(String(row.meta?.call_status))) {
+    // о состоявшихся звонках не напоминаем
   } else if (!active && AppState.currentState === 'active' && !(chat.muted_until && new Date(chat.muted_until) > new Date())) {
     const name = chat.kind === 'group' ? chat.title ?? 'Группа' : senderName(chat, row.sender_id);
     const preview =
-      row.kind === 'text' ? row.body ?? '' : row.kind === 'voice' ? '🎤 Голосовое' : row.kind === 'circle' ? '⭕ Кружок' : row.kind === 'image' ? '📷 Фото' : row.kind === 'capsule' ? '💌 Капсула времени' : '';
+      row.kind === 'text' ? row.body ?? '' : row.kind === 'voice' ? '🎤 Голосовое' : row.kind === 'circle' ? '⭕ Кружок' : row.kind === 'image' ? '📷 Фото' : row.kind === 'capsule' ? '💌 Капсула времени' : row.kind === 'call' ? '📞 Пропущенный звонок' : '';
     if (preview) useUi.getState().toast(`${name}: ${preview}`, 'info');
   }
 }
@@ -117,6 +120,11 @@ export function startRealtime(me: string) {
         if (chat) useChats.getState().patch(r.chat_id, { members: chat.members.filter((m) => m.id !== r.user_id) });
       }
     })
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'calls' }, (p) => {
+      // строку перечитываем целиком: SDP может не поместиться в событие
+      const id = (p.new as { id?: string })?.id;
+      if (id) refreshCall(id);
+    })
     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'view_once_opens' }, (p) => {
       const r = p.new as { message_id: string; user_id: string };
       useMessages.getState().addOpen(r.message_id, r.user_id);
@@ -139,6 +147,7 @@ export function startRealtime(me: string) {
         markRead(active);
       }
       touchPresence().catch(() => {});
+      checkIncomingCalls().catch(() => {});
     } else if (state !== 'active' && lastState === 'active') {
       touchPresence().catch(() => {});
     }

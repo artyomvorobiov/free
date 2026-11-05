@@ -16,7 +16,8 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { Toasts, TouchOverlay } from '@/components/ui/Overlays';
 import { initAuth } from '@/lib/auth';
-import { addNotificationTapListener, setupNotificationHandler } from '@/lib/notifications';
+import { openFromPush, refreshCall } from '@/lib/calls/engine';
+import { addNotificationReceivedListener, addNotificationTapListener, setupNotificationHandler } from '@/lib/notifications';
 import { useAuth } from '@/store/auth';
 import { useTheme } from '@/theme/useTheme';
 
@@ -50,7 +51,17 @@ export default function RootLayout() {
 
   useEffect(() => {
     if (status !== 'ready') return;
-    return addNotificationTapListener((chatId) => router.push({ pathname: '/chat/[id]', params: { id: chatId } }));
+    const offTap = addNotificationTapListener((data) => {
+      if (data.type === 'call' && data.callId) openFromPush(data.callId, data.chatId);
+      else if (data.chatId) router.push({ pathname: '/chat/[id]', params: { id: data.chatId } });
+    });
+    const offReceive = addNotificationReceivedListener((data) => {
+      if (data.type === 'call' && data.callId) refreshCall(data.callId);
+    });
+    return () => {
+      offTap();
+      offReceive();
+    };
   }, [status]);
 
   const navTheme = useMemo(() => {
@@ -87,6 +98,7 @@ export default function RootLayout() {
               <Stack.Screen name="blocked" />
               <Stack.Screen name="forward" options={{ presentation: 'modal' }} />
               <Stack.Screen name="viewer" options={{ presentation: 'fullScreenModal', animation: 'fade' }} />
+              <Stack.Screen name="call" options={{ presentation: 'fullScreenModal', animation: 'fade', gestureEnabled: false }} />
             </Stack.Protected>
           </Stack>
           <TouchOverlay />

@@ -91,7 +91,7 @@ create table if not exists public.messages (
   chat_id        uuid not null references public.chats (id) on delete cascade,
   sender_id      uuid default auth.uid() references public.profiles (id) on delete set null,
   kind           text not null default 'text'
-                 check (kind in ('text', 'image', 'voice', 'circle', 'touch', 'capsule', 'system')),
+                 check (kind in ('text', 'image', 'voice', 'circle', 'touch', 'capsule', 'system', 'call')),
   body           text check (body is null or char_length(body) <= 4000),
   media_path     text,                 -- путь в бакете media: <chat_id>/<message_id>.<ext>
   meta           jsonb not null default '{}'::jsonb,
@@ -182,6 +182,40 @@ create table if not exists public.push_log (
   primary key (message_id, kind)
 );
 
+-- Звонки (личные, аудио и видео). Само соединение идёт напрямую между телефонами (WebRTC),
+-- здесь хранится только «вызов», статус и параметры соединения (SDP).
+create table if not exists public.calls (
+  id           uuid primary key default gen_random_uuid(),
+  chat_id      uuid not null references public.chats (id) on delete cascade,
+  caller_id    uuid not null references public.profiles (id) on delete cascade,
+  callee_id    uuid not null references public.profiles (id) on delete cascade,
+  video        boolean not null default false,
+  status       text not null default 'ringing'
+               check (status in ('ringing', 'accepted', 'ended', 'declined', 'missed', 'canceled', 'busy', 'failed')),
+  offer        jsonb,
+  answer       jsonb,
+  created_at   timestamptz not null default now(),
+  answered_at  timestamptz,
+  heartbeat_at timestamptz,
+  ended_at     timestamptz,
+  ended_by     uuid,
+  constraint calls_sdp_size check (pg_column_size(offer) < 65536 and pg_column_size(answer) < 65536)
+);
+create index if not exists calls_callee_idx on public.calls (callee_id, status);
+create index if not exists calls_caller_idx on public.calls (caller_id, status);
+create index if not exists calls_chat_idx on public.calls (chat_id, created_at desc);
+
+-- Настройки сервера, недоступные приложению напрямую (например, TURN-сервер для звонков)
+create table if not exists public.app_config (
+  key   text primary key,
+  value jsonb not null
+);
+
+-- Обновление существующих баз: в сообщениях появился тип «call» (история звонков)
+alter table public.messages drop constraint if exists messages_kind_check;
+alter table public.messages add constraint messages_kind_check
+  check (kind in ('text', 'image', 'voice', 'circle', 'touch', 'capsule', 'system', 'call'));
+
 -- ---------------------------------------------------------------------
 -- 2. Вспомогательные функции для политик
 -- ---------------------------------------------------------------------
@@ -269,6 +303,7 @@ as $$
     when 'circle'  then case when p_view_once then '⭕ Одноразовый кружок' else '⭕ Видеосообщение' end
     when 'touch'   then '💗 Касание'
     when 'capsule' then '💌 Капсула времени — откроется в назначенный момент'
+    when 'call'    then '📞 Пропущенный звонок'
     else 'Новое сообщение'
   end;
 $$;
@@ -284,6 +319,7 @@ as $$
     where m.chat_id = cm.chat_id
       and m.sender_id is distinct from p_user
       and m.kind <> 'system'
+      and not (m.kind = 'call' and coalesce(m.meta->>'call_status', '') not in ('missed', 'canceled'))
       and m.created_at > coalesce(p.last_read_at, cm.joined_at)
       and (m.expires_at is null or m.expires_at > now())
   )), 0)::integer
@@ -456,9 +492,17 @@ begin
     return null;
   end if;
 
+  -- из истории звонков уведомляем только о пропущенных
+  if new.kind = 'call' and coalesce(new.meta->>'call_status', '') not in ('missed', 'canceled') then
+    return null;
+  end if;
+
   select coalesce(nullif(display_name, ''), username, 'Близко') into v_sender
     from public.profiles where id = new.sender_id;
-  v_preview := public.message_preview(new.kind, new.body, new.view_once);
+  v_preview := case
+    when new.kind = 'call' and coalesce((new.meta->>'video')::boolean, false) then '🎥 Пропущенный видеозвонок'
+    else public.message_preview(new.kind, new.body, new.view_once)
+  end;
   v_title := case when v_chat.kind = 'group' then coalesce(nullif(v_chat.title, ''), 'Группа') else v_sender end;
 
   select coalesce(jsonb_agg(jsonb_build_object(
@@ -587,6 +631,63 @@ create trigger profiles_before_update
   before update on public.profiles
   for each row execute function public.profiles_before_update();
 
+-- Звонки: push о входящем вызове и запись в историю чата по окончании
+create or replace function public.calls_after_write()
+returns trigger
+language plpgsql security definer set search_path = public
+as $$
+declare
+  v_name     text;
+  v_push     jsonb;
+  v_duration integer;
+begin
+  if tg_op = 'INSERT' and new.status = 'ringing' then
+    select coalesce(nullif(display_name, ''), username, 'Близко') into v_name
+      from public.profiles where id = new.caller_id;
+    select coalesce(jsonb_agg(jsonb_build_object(
+             'to', t.token,
+             'title', v_name,
+             'body', case when new.video then '🎥 Входящий видеозвонок' else '📞 Входящий звонок' end,
+             'sound', case when pr.status_quiet and pr.status_until > now() then null else 'call.wav' end,
+             'priority', 'high',
+             'channelId', 'calls',
+             'ttl', 45,
+             'data', jsonb_build_object('type', 'call', 'callId', new.id, 'chatId', new.chat_id)
+           )), '[]'::jsonb)
+      into v_push
+      from public.push_tokens t
+      join public.profiles pr on pr.id = t.user_id
+     where t.user_id = new.callee_id
+       and not exists (select 1 from public.blocks b where b.blocker = new.callee_id and b.blocked = new.caller_id);
+    perform public.send_expo_push(v_push);
+  end if;
+
+  if new.status in ('ended', 'declined', 'missed', 'canceled', 'busy', 'failed')
+     and (tg_op = 'INSERT' or old.status in ('ringing', 'accepted')) then
+    v_duration := case
+      when new.answered_at is not null and new.ended_at is not null
+        then greatest(0, extract(epoch from (new.ended_at - new.answered_at))::integer)
+    end;
+    insert into public.messages (chat_id, sender_id, kind, meta)
+    values (new.chat_id, new.caller_id, 'call', jsonb_build_object(
+      'call_id', new.id,
+      'call_status', new.status,
+      'video', new.video,
+      'duration', v_duration
+    ));
+  end if;
+  return null;
+exception when others then
+  raise warning 'calls_after_write: %', sqlerrm;
+  return null;
+end;
+$$;
+
+drop trigger if exists calls_after_write on public.calls;
+create trigger calls_after_write
+  after insert or update on public.calls
+  for each row execute function public.calls_after_write();
+
 -- ---------------------------------------------------------------------
 -- 5. Row Level Security
 -- ---------------------------------------------------------------------
@@ -603,6 +704,8 @@ alter table public.push_tokens        enable row level security;
 alter table public.blocks             enable row level security;
 alter table public.reports            enable row level security;
 alter table public.push_log           enable row level security;
+alter table public.calls              enable row level security;
+alter table public.app_config         enable row level security;
 
 -- profiles
 drop policy if exists "profiles: read" on public.profiles;
@@ -714,7 +817,13 @@ drop policy if exists "reports: create" on public.reports;
 create policy "reports: create" on public.reports
   for insert to authenticated with check (reporter = (select auth.uid()));
 
--- push_log: без доступа для клиентов (политик нет)
+-- push_log и app_config: без доступа для клиентов (политик нет)
+
+-- calls: видят только двое участников звонка; изменения — через функции ниже
+drop policy if exists "calls: participants read" on public.calls;
+create policy "calls: participants read" on public.calls
+  for select to authenticated
+  using ((select auth.uid()) in (caller_id, callee_id));
 
 -- ---------------------------------------------------------------------
 -- 6. Функции, которые вызывает приложение (RPC)
@@ -813,6 +922,7 @@ as $$
         where m.chat_id = c.id
           and m.sender_id is distinct from auth.uid()
           and m.kind <> 'system'
+          and not (m.kind = 'call' and coalesce(m.meta->>'call_status', '') not in ('missed', 'canceled'))
           and m.created_at > coalesce(p.last_read_at, me.joined_at)
           and (m.expires_at is null or m.expires_at > now())
       )::integer as unread
@@ -1153,6 +1263,181 @@ end;
 $$;
 
 -- ---------------------------------------------------------------------
+-- 6б. Звонки
+-- ---------------------------------------------------------------------
+
+-- Закрывает «зависшие» звонки (никто не ответил или приложение собеседника пропало)
+create or replace function public.cleanup_stale_calls()
+returns void
+language sql security definer set search_path = public
+as $$
+  update public.calls
+     set status = 'missed', ended_at = now()
+   where status = 'ringing' and created_at < now() - interval '60 seconds';
+  update public.calls
+     set status = 'ended', ended_at = coalesce(heartbeat_at, answered_at, now())
+   where status = 'accepted'
+     and coalesce(heartbeat_at, answered_at, created_at) < now() - interval '60 seconds';
+$$;
+
+-- Позвонить собеседнику в личном чате
+create or replace function public.start_call(p_chat uuid, p_video boolean default false)
+returns public.calls
+language plpgsql security definer set search_path = public
+as $$
+declare
+  v_me    uuid := auth.uid();
+  v_other uuid;
+  v_busy  boolean;
+  v_call  public.calls;
+begin
+  if v_me is null then
+    raise exception 'not authenticated' using errcode = '28000';
+  end if;
+  if not exists (select 1 from public.chats where id = p_chat and kind = 'direct') then
+    raise exception 'calls are available in direct chats only' using errcode = '22023';
+  end if;
+  if not public.can_send(p_chat) then
+    raise exception 'forbidden' using errcode = '42501';
+  end if;
+  select user_id into v_other from public.chat_members where chat_id = p_chat and user_id <> v_me limit 1;
+  if v_other is null then
+    raise exception 'peer not found' using errcode = '22023';
+  end if;
+
+  perform public.cleanup_stale_calls();
+
+  -- мои предыдущие неотвеченные вызовы считаем отменёнными
+  update public.calls set status = 'canceled', ended_at = now(), ended_by = v_me
+   where caller_id = v_me and status = 'ringing';
+
+  v_busy := exists (
+    select 1 from public.calls c
+     where c.status in ('ringing', 'accepted') and v_other in (c.caller_id, c.callee_id)
+  );
+
+  insert into public.calls (chat_id, caller_id, callee_id, video, status, ended_at)
+  values (p_chat, v_me, v_other, coalesce(p_video, false),
+          case when v_busy then 'busy' else 'ringing' end,
+          case when v_busy then now() end)
+  returning * into v_call;
+  return v_call;
+end;
+$$;
+
+-- Звонящий сохраняет параметры соединения (SDP offer)
+create or replace function public.call_set_offer(p_call uuid, p_offer jsonb)
+returns void
+language sql security definer set search_path = public
+as $$
+  update public.calls set offer = p_offer
+   where id = p_call and caller_id = auth.uid() and status = 'ringing';
+$$;
+
+-- Собеседник принимает звонок (SDP answer)
+create or replace function public.answer_call(p_call uuid, p_answer jsonb)
+returns public.calls
+language plpgsql security definer set search_path = public
+as $$
+declare
+  v_call public.calls;
+begin
+  update public.calls
+     set answer = p_answer, status = 'accepted', answered_at = now(), heartbeat_at = now()
+   where id = p_call and callee_id = auth.uid() and status = 'ringing'
+  returning * into v_call;
+  if v_call.id is null then
+    raise exception 'call is no longer ringing' using errcode = '22023';
+  end if;
+  return v_call;
+end;
+$$;
+
+-- Завершить / отклонить / отменить звонок
+create or replace function public.end_call(p_call uuid, p_reason text default null)
+returns public.calls
+language plpgsql security definer set search_path = public
+as $$
+declare
+  v_me     uuid := auth.uid();
+  v_call   public.calls;
+  v_status text;
+begin
+  select * into v_call from public.calls
+   where id = p_call and v_me in (caller_id, callee_id)
+   for update;
+  if v_call.id is null then
+    raise exception 'call not found' using errcode = '22023';
+  end if;
+  if v_call.status not in ('ringing', 'accepted') then
+    return v_call;
+  end if;
+  v_status := case
+    when v_call.status = 'accepted' then case when p_reason = 'failed' then 'failed' else 'ended' end
+    when v_me = v_call.callee_id then case when p_reason = 'busy' then 'busy' else 'declined' end
+    when p_reason in ('missed', 'failed') then p_reason
+    else 'canceled'
+  end;
+  update public.calls
+     set status = v_status, ended_at = now(), ended_by = v_me
+   where id = p_call
+  returning * into v_call;
+  return v_call;
+end;
+$$;
+
+-- «Я ещё на связи»: раз в 15 секунд во время разговора
+create or replace function public.call_heartbeat(p_call uuid)
+returns void
+language sql security definer set search_path = public
+as $$
+  update public.calls set heartbeat_at = now()
+   where id = p_call and status = 'accepted' and auth.uid() in (caller_id, callee_id);
+$$;
+
+-- Серверы для установки соединения (STUN/TURN).
+-- Свой TURN задаётся без изменения приложения, например:
+--   insert into public.app_config (key, value) values
+--     ('ice_servers', '[{"urls": ["turn:turn.example.com:3478"], "username": "user", "credential": "pass"}]')
+--   on conflict (key) do update set value = excluded.value;
+-- Или для своего coturn с static-auth-secret (временные пароли выдаются на 6 часов):
+--   insert into public.app_config (key, value) values
+--     ('turn_urls', '["turn:turn.example.com:3478?transport=udp", "turns:turn.example.com:5349"]'),
+--     ('turn_secret', '"ваш-секрет"')
+--   on conflict (key) do update set value = excluded.value;
+create or replace function public.get_ice_servers()
+returns jsonb
+language plpgsql stable security definer set search_path = public
+as $$
+declare
+  v_servers jsonb := '[{"urls": ["stun:stun.l.google.com:19302", "stun:stun.cloudflare.com:3478"]}]'::jsonb;
+  v_static  jsonb;
+  v_urls    jsonb;
+  v_secret  text;
+  v_user    text;
+begin
+  if auth.uid() is null then
+    raise exception 'not authenticated' using errcode = '28000';
+  end if;
+  select value into v_static from public.app_config where key = 'ice_servers';
+  if jsonb_typeof(v_static) = 'array' then
+    v_servers := v_servers || v_static;
+  end if;
+  select value into v_urls from public.app_config where key = 'turn_urls';
+  select value #>> '{}' into v_secret from public.app_config where key = 'turn_secret';
+  if v_urls is not null and coalesce(v_secret, '') <> '' then
+    v_user := ((extract(epoch from now())::bigint) + 6 * 3600)::text || ':' || auth.uid()::text;
+    v_servers := v_servers || jsonb_build_array(jsonb_build_object(
+      'urls', v_urls,
+      'username', v_user,
+      'credential', encode(extensions.hmac(v_user, v_secret, 'sha1'), 'base64')
+    ));
+  end if;
+  return v_servers;
+end;
+$$;
+
+-- ---------------------------------------------------------------------
 -- 7. Фоновые задачи
 -- ---------------------------------------------------------------------
 
@@ -1226,6 +1511,7 @@ begin
      set status_emoji = null, status_text = null, status_until = null, status_quiet = false
    where status_until is not null and status_until < now();
   delete from public.push_log where created_at < now() - interval '7 days';
+  perform public.cleanup_stale_calls();
   perform public.notify_unlocked_capsules();
 end;
 $$;
@@ -1258,6 +1544,12 @@ begin
     'public.open_view_once(uuid)',
     'public.register_push_token(text, text)',
     'public.delete_my_account()',
+    'public.start_call(uuid, boolean)',
+    'public.call_set_offer(uuid, jsonb)',
+    'public.answer_call(uuid, jsonb)',
+    'public.end_call(uuid, text)',
+    'public.call_heartbeat(uuid)',
+    'public.get_ice_servers()',
     'public.is_member(uuid)',
     'public.is_member_text(text)',
     'public.can_send(uuid)',
@@ -1276,7 +1568,8 @@ begin
     'public.post_system(uuid, uuid, jsonb)',
     'public.publish_due_messages()',
     'public.notify_unlocked_capsules()',
-    'public.purge_expired()'
+    'public.purge_expired()',
+    'public.cleanup_stale_calls()'
   ] loop
     execute format('revoke execute on function %s from public, anon, authenticated', f);
     execute format('grant execute on function %s to service_role', f);
@@ -1341,7 +1634,7 @@ begin
   if not exists (select 1 from pg_publication where pubname = 'supabase_realtime') then
     create publication supabase_realtime;
   end if;
-  foreach t in array array['messages', 'reactions', 'chat_members', 'chats', 'view_once_opens', 'profiles'] loop
+  foreach t in array array['messages', 'reactions', 'chat_members', 'chats', 'view_once_opens', 'profiles', 'calls'] loop
     if not exists (
       select 1 from pg_publication_tables
       where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = t

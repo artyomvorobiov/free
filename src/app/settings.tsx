@@ -1,6 +1,6 @@
 import Constants from 'expo-constants';
 import { router } from 'expo-router';
-import { Ban, Bell, Eye, LogOut, MessageSquareText, Moon, Trash, UserRound } from 'lucide-react-native';
+import { Ban, Bell, Eye, LogOut, MessageSquareText, Moon, PhoneIncoming, Trash, UserRound } from 'lucide-react-native';
 import { useState } from 'react';
 import { Linking, Platform, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -13,6 +13,7 @@ import { T } from '@/components/ui/T';
 import { Tap } from '@/components/ui/Tap';
 import { errorText, setStatus, updateProfile } from '@/lib/api';
 import { deleteAccount, signOut } from '@/lib/auth';
+import { startDemoIncoming } from '@/lib/calls/engine';
 import { statusActive } from '@/lib/chat-utils';
 import { confirm } from '@/lib/confirm';
 import { DEMO } from '@/lib/config';
@@ -252,6 +253,12 @@ export default function Settings() {
           />
           <Row icon={Ban} label="Заблокированные" onPress={() => router.push('/blocked')} last />
         </Section>
+
+        {DEMO ? (
+          <Section title="Демо" footer="Покажет, как выглядит входящий звонок. Настоящие звонки работают в установленной версии приложения.">
+            <Row icon={PhoneIncoming} label="Входящий звонок" onPress={() => startDemoIncoming()} last />
+          </Section>
+        ) : null}
 
         {Platform.OS !== 'web' ? (
           <Section title="Уведомления">

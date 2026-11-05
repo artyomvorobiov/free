@@ -46,8 +46,8 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "Камера нужна, чтобы снимать кружочки и фото для друзей.",
-          "microphonePermission": "Микрофон нужен для голосовых сообщений и кружочков со звуком.",
+          "cameraPermission": "Камера нужна для видеозвонков, кружочков и фото.",
+          "microphonePermission": "Микрофон нужен для звонков, голосовых сообщений и кружочков.",
           "recordAudioAndroid": true,
           "barcodeScannerEnabled": false
         }
@@ -55,26 +55,39 @@
       [
         "expo-audio",
         {
-          "microphonePermission": "Микрофон нужен для голосовых сообщений и кружочков со звуком.",
-          "enableBackgroundPlayback": false
+          "microphonePermission": "Микрофон нужен для звонков, голосовых сообщений и кружочков.",
+          "enableBackgroundPlayback": true
         }
       ],
       [
         "expo-image-picker",
         {
           "photosPermission": "Доступ к фото нужен, чтобы отправлять снимки и ставить аватар.",
-          "cameraPermission": "Камера нужна, чтобы снимать фото для друзей."
+          "cameraPermission": "Камера нужна для видеозвонков, кружочков и фото."
         }
       ],
       [
         "expo-notifications",
         {
-          "color": "#FF6A3D"
+          "color": "#FF6A3D",
+          "sounds": [
+            "./assets/sounds/call.wav",
+            "./assets/sounds/incallmanager_ringtone.mp3",
+            "./assets/sounds/incallmanager_ringback.mp3",
+            "./assets/sounds/incallmanager_busytone.mp3"
+          ]
         }
       ],
       "expo-video",
       "expo-font",
-      "expo-system-ui"
+      "expo-system-ui",
+      [
+        "@config-plugins/react-native-webrtc",
+        {
+          "cameraPermission": "Камера нужна для видеозвонков, кружочков и фото.",
+          "microphonePermission": "Микрофон нужен для звонков, голосовых сообщений и кружочков."
+        }
+      ]
     ],
     "extra": {
       "eas": {}

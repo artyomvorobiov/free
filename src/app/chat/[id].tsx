@@ -1,6 +1,6 @@
 import { LinearGradient } from 'expo-linear-gradient';
 import { router, useLocalSearchParams } from 'expo-router';
-import { ChevronLeft, Hourglass, X } from 'lucide-react-native';
+import { ChevronLeft, Hourglass, Phone, Video, X } from 'lucide-react-native';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, FlatList, KeyboardAvoidingView, Platform, StyleSheet, View } from 'react-native';
 import Animated, { FadeIn } from 'react-native-reanimated';
@@ -36,6 +36,7 @@ import {
   sendTouch,
   unblockUser,
 } from '@/lib/api';
+import { startCall } from '@/lib/calls/engine';
 import { chatTitle, memberName, peerOf, statusActive } from '@/lib/chat-utils';
 import { confirm } from '@/lib/confirm';
 import { playTouch, TOUCHES } from '@/lib/haptics';
@@ -270,6 +271,12 @@ export default function ChatScreen() {
                 {formatCountdown(chat.disappear_seconds * 1000)}
               </T>
             </View>
+          ) : null}
+          {chat.kind === 'direct' && peer && !blockedByMe ? (
+            <>
+              <IconButton icon={Phone} iconSize={21} label="Аудиозвонок" onPress={() => startCall(chatId, false)} />
+              <IconButton icon={Video} iconSize={23} label="Видеозвонок" onPress={() => startCall(chatId, true)} />
+            </>
           ) : null}
         </View>
         {showStatus ? (

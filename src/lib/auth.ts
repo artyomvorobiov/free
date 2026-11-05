@@ -3,6 +3,7 @@ import { useChats } from '@/store/chats';
 import { useMessages } from '@/store/messages';
 
 import { loadChats } from './api';
+import { checkIncomingCalls } from './calls/engine';
 import { DEMO } from './config';
 import { DEMO_ME } from './demo';
 import { registerForPush, unregisterPush } from './notifications';
@@ -32,6 +33,7 @@ export async function afterReady() {
   }
   startRealtime(userId);
   await loadChats().catch((e) => console.warn('loadChats', e));
+  checkIncomingCalls().catch(() => {});
   registerForPush().catch((e) => console.warn('push', e));
 }
 

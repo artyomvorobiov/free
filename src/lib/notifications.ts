@@ -44,6 +44,13 @@ export async function registerForPush() {
       importance: Notifications.AndroidImportance.HIGH,
       vibrationPattern: [0, 180, 120, 180],
     });
+    await Notifications.setNotificationChannelAsync('calls', {
+      name: 'Звонки',
+      importance: Notifications.AndroidImportance.MAX,
+      sound: 'call.wav',
+      vibrationPattern: [0, 900, 1100, 900, 1100, 900],
+      lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+    });
   }
   const granted = await ensureNotificationPermission();
   if (!granted) return;
@@ -109,14 +116,25 @@ export async function cancelSnoozeReminder(chatId: string) {
   }
 }
 
-export function addNotificationTapListener(onChat: (chatId: string) => void) {
+export type PushData = { chatId?: string; type?: string; callId?: string; local?: boolean };
+
+export function addNotificationTapListener(onTap: (data: PushData) => void) {
   if (!supported) return () => {};
   const last = Notifications.getLastNotificationResponse();
-  const lastChat = (last?.notification.request.content.data as { chatId?: string } | undefined)?.chatId;
-  if (lastChat) setTimeout(() => onChat(lastChat), 300);
+  const lastData = last?.notification.request.content.data as PushData | undefined;
+  if (lastData?.chatId) setTimeout(() => onTap(lastData), 300);
   const sub = Notifications.addNotificationResponseReceivedListener((r) => {
-    const chatId = (r.notification.request.content.data as { chatId?: string } | undefined)?.chatId;
-    if (chatId) onChat(chatId);
+    const data = r.notification.request.content.data as PushData | undefined;
+    if (data?.chatId) onTap(data);
+  });
+  return () => sub.remove();
+}
+
+/** Push пришёл, пока приложение открыто (нужно для входящих звонков) */
+export function addNotificationReceivedListener(onData: (data: PushData) => void) {
+  if (!supported) return () => {};
+  const sub = Notifications.addNotificationReceivedListener((n) => {
+    onData((n.request.content.data ?? {}) as PushData);
   });
   return () => sub.remove();
 }

@@ -21,6 +21,7 @@ import type { Message } from '@/lib/types';
 import { hexToRgba, useTheme } from '@/theme/useTheme';
 
 import {
+  CallBubble,
   CapsuleBubble,
   CircleBubble,
   ImageBubble,
@@ -153,6 +154,9 @@ export const MessageItem = memo(function MessageItem({
       break;
     case 'touch':
       bubble = <TouchBubble m={m} ctx={full} />;
+      break;
+    case 'call':
+      bubble = <CallBubble m={m} ctx={full} />;
       break;
     default:
       bubble = <TextBubble m={m} ctx={full} senderName={showName ? senderName : null} />;

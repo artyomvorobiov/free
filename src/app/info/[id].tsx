@@ -1,5 +1,5 @@
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
-import { AlarmClock, Ban, Bell, BellOff, Flag, LogOut, Pencil, UserMinus, UserPlus } from 'lucide-react-native';
+import { AlarmClock, Ban, Bell, BellOff, Flag, LogOut, Pencil, Phone, UserMinus, UserPlus, Video } from 'lucide-react-native';
 import { useCallback, useState } from 'react';
 import { ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -23,6 +23,7 @@ import {
   unblockUser,
   updateChat,
 } from '@/lib/api';
+import { startCall } from '@/lib/calls/engine';
 import { chatTitle, peerOf, statusActive } from '@/lib/chat-utils';
 import { confirm } from '@/lib/confirm';
 import { DISAPPEAR_OPTIONS, formatLastSeen, formatMoment, formatUntil, isOnline } from '@/lib/time';
@@ -108,6 +109,12 @@ export default function ChatInfo() {
             <T v="callout" center style={{ marginTop: 10, paddingHorizontal: 40 }}>
               {peer.bio}
             </T>
+          ) : null}
+          {chat.kind === 'direct' && peer && !blocked ? (
+            <View style={{ flexDirection: 'row', gap: 10, marginTop: 18 }}>
+              <Button title="Позвонить" icon={Phone} size="md" kind="secondary" onPress={() => startCall(chatId, false)} />
+              <Button title="Видео" icon={Video} size="md" kind="secondary" onPress={() => startCall(chatId, true)} />
+            </View>
           ) : null}
         </View>
 

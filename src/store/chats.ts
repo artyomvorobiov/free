@@ -32,7 +32,7 @@ export const useChats = create<ChatsState>((set, get) => ({
   onMessage: (msg, me, isOpen) => {
     const chat = get().byId[msg.chat_id];
     if (!chat) return;
-    const incoming = msg.sender_id !== me && msg.kind !== 'system';
+    const incoming = msg.sender_id !== me && countsAsUnread(msg);
     const newer = !chat.last_message || chat.last_message.created_at <= msg.created_at;
     set((s) => ({
       byId: {
@@ -70,6 +70,13 @@ export const useChats = create<ChatsState>((set, get) => ({
 }));
 
 const isFuture = (iso: string | null) => !!iso && new Date(iso).getTime() > Date.now();
+
+/** Что считается непрочитанным: всё, кроме служебных сообщений и состоявшихся звонков */
+export function countsAsUnread(m: Message) {
+  if (m.kind === 'system') return false;
+  if (m.kind === 'call') return m.meta?.call_status === 'missed' || m.meta?.call_status === 'canceled';
+  return true;
+}
 
 export function isSnoozed(c: Chat) {
   return isFuture(c.snoozed_until);

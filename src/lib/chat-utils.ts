@@ -54,6 +54,41 @@ export function systemText(m: Message, chat: Chat | undefined, me: string | null
   }
 }
 
+function callDuration(sec?: number) {
+  if (!sec) return '';
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return m ? `${m} мин ${s} с` : `${s} с`;
+}
+
+/** Описание звонка из истории: «Исходящий звонок · 3 мин 12 с», «Пропущенный звонок»… */
+export function callInfo(m: Message, me: string | null) {
+  const outgoing = m.sender_id === me;
+  const video = !!m.meta?.video;
+  const status = m.meta?.call_status ?? 'ended';
+  const kind = video ? 'видеозвонок' : 'звонок';
+  const missed = !outgoing && (status === 'missed' || status === 'canceled' || status === 'busy');
+  let title = outgoing ? `Исходящий ${kind}` : `Входящий ${kind}`;
+  if (missed) title = `Пропущенный ${kind}`;
+  const sub =
+    status === 'ended'
+      ? callDuration(m.meta?.duration) || 'Завершён'
+      : status === 'declined'
+        ? 'Отклонён'
+        : status === 'busy'
+          ? outgoing
+            ? 'Занято'
+            : 'Вы разговаривали'
+          : status === 'failed'
+            ? 'Не удалось соединиться'
+            : outgoing
+              ? status === 'missed'
+                ? 'Нет ответа'
+                : 'Отменён'
+              : 'Нажмите, чтобы перезвонить';
+  return { title, sub, missed, outgoing, video };
+}
+
 /** Короткое описание сообщения для списка чатов и ответов */
 export function preview(m: Message | null | undefined, chat?: Chat, me?: string | null): string {
   if (!m) return '';
@@ -74,6 +109,10 @@ export function preview(m: Message | null | undefined, chat?: Chat, me?: string 
       return m.unlock_at && new Date(m.unlock_at) > new Date() ? '💌 Капсула времени' : `💌 ${m.capsule?.body ?? 'Капсула открыта'}`;
     case 'system':
       return systemText(m, chat, me ?? null);
+    case 'call': {
+      const c = callInfo(m, me ?? null);
+      return `${c.video ? '🎥' : '📞'} ${c.title}${m.meta?.call_status === 'ended' && m.meta?.duration ? ' · ' + c.sub : ''}`;
+    }
     default:
       return '';
   }
